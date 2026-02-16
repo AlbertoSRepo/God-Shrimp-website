@@ -75,6 +75,15 @@ export class SceneEngine {
   // Scene fog (linear fog based on Visibility circle radius)
   private sceneFog: THREE.Fog | null = null;
 
+  // Moonlight: dim fill light at night so assets aren't fully black
+  private moonLight: THREE.DirectionalLight | null = null;
+
+  // Statue point light: spherical glow around Shrimp_god_statue at night
+  private statueLight: THREE.PointLight | null = null;
+
+  // Sun point light: bright radial light emitted from the Sun model itself
+  private sunPointLight: THREE.PointLight | null = null;
+
   // Ground physics
   private _raycaster = new THREE.Raycaster();
   private _rayOrigin = new THREE.Vector3();
@@ -352,6 +361,11 @@ export class SceneEngine {
     this.sunLight.shadow.camera.bottom = -15;
     this.scene.add(this.sunLight);
 
+    // Moonlight: faint blue-ish fill so assets aren't pitch-black at night
+    this.moonLight = new THREE.DirectionalLight(0x8090c0, 0);
+    this.moonLight.position.set(-5, 10, -3);
+    this.scene.add(this.moonLight);
+
     // Scene fog - near/far will be updated after loading Visibility asset from scene.glb
     // Start with permissive defaults so nothing is hidden before the scene loads
     this.sceneFog = new THREE.Fog(0x87ceeb, 800, 1000);
@@ -601,6 +615,9 @@ export class SceneEngine {
       // Create volumetric fog around island base
       this.createIslandFog(model);
 
+      // Create spherical point light around the Shrimp_god_statue (Lobster statue)
+      this.setupStatueLight(model);
+
       // Initialize grass system
       this.grassSystem.init(model);
       const grassMesh = this.grassSystem.getMesh();
@@ -646,6 +663,21 @@ export class SceneEngine {
       }
     });
 
+    // Boost emissive so the sun visually glows bright
+    sunScene.traverse((child: THREE.Object3D) => {
+      if ((child as THREE.Mesh).isMesh) {
+        const mesh = child as THREE.Mesh;
+        const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        for (const mat of mats) {
+          const std = mat as THREE.MeshStandardMaterial;
+          if (std.emissive) {
+            std.emissive.set(0xffdd44);
+            std.emissiveIntensity = 4.0;
+          }
+        }
+      }
+    });
+
     // Scale the sun model appropriately
     // Compute its bounding box to determine a good scale
     const bbox = new THREE.Box3().setFromObject(sunScene);
@@ -656,10 +688,14 @@ export class SceneEngine {
     const scaleFactor = targetSize / maxDim;
     sunScene.scale.setScalar(scaleFactor);
 
+    // Attach a bright point light to the sun so it radiates light in all directions
+    this.sunPointLight = new THREE.PointLight(0xfff0cc, 0, 500, 1.0);
+    sunScene.add(this.sunPointLight);
+
     this.sunModel = sunScene;
     this.scene.add(sunScene);
 
-    console.log('Sun.glb model loaded and added to scene');
+    console.log('Sun.glb model loaded with point light');
   }
 
   /**
@@ -889,17 +925,39 @@ export class SceneEngine {
       .copy(lightDir)
       .multiplyScalar(this.sunDistance);
 
-    // Sun light intensity: only light source in the scene
+    // Sun directional light intensity (reduced — sun point light provides additional radiance)
     const sunIntensity =
       sunHeight > 0.05
-        ? THREE.MathUtils.smoothstep(sunHeight, 0.05, 0.5) * 2.5
+        ? THREE.MathUtils.smoothstep(sunHeight, 0.05, 0.5) * 1.8
         : sunHeight > -0.05
-          ? THREE.MathUtils.smoothstep(sunHeight, -0.05, 0.05) * 0.3
+          ? THREE.MathUtils.smoothstep(sunHeight, -0.05, 0.05) * 0.2
           : 0;
     this.sunLight.intensity = sunIntensity;
     this.sunLight.color.set(0xffee88);
 
-    // --- Update grass lighting to match day-night (sun only) ---
+    // --- Sun point light: strong radial glow from the sun object ---
+    if (this.sunPointLight) {
+      const sunPtIntensity =
+        sunHeight > 0.05
+          ? THREE.MathUtils.smoothstep(sunHeight, 0.05, 0.4) * 8.0
+          : 0;
+      this.sunPointLight.intensity = sunPtIntensity;
+    }
+
+    // --- Moonlight: faint fill when sun is below horizon ---
+    if (this.moonLight) {
+      // Fade in as sun drops below 0, max at deep night
+      const moonT = THREE.MathUtils.smoothstep(-sunHeight, 0.0, 0.3);
+      this.moonLight.intensity = moonT * 0.8;
+    }
+
+    // --- Statue point light: glow at night ---
+    if (this.statueLight) {
+      const statueLightT = THREE.MathUtils.smoothstep(-sunHeight, 0.0, 0.2);
+      this.statueLight.intensity = statueLightT * 6.0;
+    }
+
+    // --- Update grass lighting to match day-night (moon provides faint fill at night) ---
     const grassLightDir = this._sunPosition
       .clone()
       .sub(this.isleCenter)
@@ -907,12 +965,20 @@ export class SceneEngine {
     if (sunHeight <= 0) {
       grassLightDir.negate();
     }
+    const moonFill = THREE.MathUtils.smoothstep(-sunHeight, 0.0, 0.3) * 0.06;
     const grassAmbient = sunHeight > 0
       ? THREE.MathUtils.lerp(0.02, 0.12, THREE.MathUtils.smoothstep(sunHeight, 0, 0.3))
-      : 0.02;
+      : 0.02 + moonFill;
+    // At night blend grass light color toward moonlight tint
+    const grassLightColor = this.sunLight.color.clone();
+    if (sunHeight < 0) {
+      const moonColor = new THREE.Color(0x8090c0);
+      const nightT = THREE.MathUtils.smoothstep(-sunHeight, 0.0, 0.3);
+      grassLightColor.lerp(moonColor, nightT * 0.6);
+    }
     this.grassSystem.updateLighting(
       grassLightDir,
-      this.sunLight.color.clone(),
+      grassLightColor,
       grassAmbient
     );
 
@@ -979,6 +1045,39 @@ export class SceneEngine {
   }
 
   /**
+   * Place a PointLight at the Shrimp_god_statue (Lobster statue) position.
+   * Intensity is driven by the day-night cycle (bright at night, off during day).
+   */
+  private setupStatueLight(model: THREE.Group): void {
+    let statueNode: THREE.Object3D | null = null;
+    model.traverse((child: THREE.Object3D) => {
+      if (child.name === 'Shrimp_god_statue') {
+        statueNode = child;
+      }
+    });
+
+    if (!statueNode) {
+      console.warn('Shrimp_god_statue not found, skipping statue light');
+      return;
+    }
+
+    (statueNode as THREE.Object3D).updateWorldMatrix(true, true);
+    const statuePos = new THREE.Vector3();
+    (statueNode as THREE.Object3D).getWorldPosition(statuePos);
+
+    // Raise the light slightly above the statue center
+    const bbox = new THREE.Box3().setFromObject(statueNode as THREE.Object3D);
+    const height = bbox.getSize(new THREE.Vector3()).y;
+    statuePos.y += height * 0.6;
+
+    this.statueLight = new THREE.PointLight(0xd4c8ff, 0, 18, 1.2);
+    this.statueLight.position.copy(statuePos);
+    this.scene.add(this.statueLight);
+
+    console.log('Statue point light placed at:', statuePos);
+  }
+
+  /**
    * Create a volumetric cloud volume around the Sky_city (Laputa castle) using
    * raymarched 3D noise in a GLSL3 RawShaderMaterial, adapted from the Three.js
    * cloud volume example.
@@ -1027,7 +1126,8 @@ export class SceneEngine {
               .subScalar(texSize / 2)
               .divideScalar(texSize)
               .length();
-          data[i] =
+          // Base noise value
+          let noiseVal =
             (128 +
               128 *
                 perlin.noise(
@@ -1037,6 +1137,16 @@ export class SceneEngine {
                 )) *
             d *
             d;
+          // Secondary low-frequency noise to carve holes in the cloud
+          const holeNoise = perlin.noise(
+            x * 0.02,
+            y * 0.025,
+            z * 0.02
+          );
+          if (holeNoise > 0.15) {
+            noiseVal *= Math.max(0, 1.0 - (holeNoise - 0.15) * 3.0);
+          }
+          data[i] = noiseVal;
           i++;
         }
       }
@@ -1057,10 +1167,10 @@ export class SceneEngine {
         base: { value: new THREE.Color(0.92, 0.94, 0.97) }, // light blue-white cloud
         map: { value: texture },
         cameraPos: { value: new THREE.Vector3() },
-        threshold: { value: 0.25 },
-        opacity: { value: 0.25 },
+        threshold: { value: 0.3 },
+        opacity: { value: 0.18 },
         range: { value: 0.1 },
-        steps: { value: 97 },
+        steps: { value: 80 },
         frame: { value: 0 },
       },
       vertexShader: this.volumetricVertexShader,
@@ -1416,6 +1526,21 @@ export class SceneEngine {
       this.seaMaterial = null;
     }
     this.seaMesh = null;
+
+    // Dispose sun point light (attached to sunModel, removed with it)
+    this.sunPointLight = null;
+
+    // Dispose moonlight
+    if (this.moonLight) {
+      this.scene.remove(this.moonLight);
+      this.moonLight = null;
+    }
+
+    // Dispose statue point light
+    if (this.statueLight) {
+      this.scene.remove(this.statueLight);
+      this.statueLight = null;
+    }
 
     // Clear fog reference
     this.sceneFog = null;

@@ -12,8 +12,8 @@ const GRASS_CONFIG = {
     windSpeed: 1.5,
     interactionRadius: 0.5,   // how close objects must be to bend grass
     interactionStrength: 0.4,
-    colorBase: new THREE.Color(0x4a7a3a),
-    colorTip: new THREE.Color(0x9ada6f),
+    colorBase: new THREE.Color(process.env.NEXT_PUBLIC_GRASS_COLOR_BASE || '#3d6b30'),
+    colorTip: new THREE.Color(process.env.NEXT_PUBLIC_GRASS_COLOR_TIP || '#82c45c'),
 };
 
 const MAX_INTERACTORS = 16;
