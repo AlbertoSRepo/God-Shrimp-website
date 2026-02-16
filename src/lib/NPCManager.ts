@@ -32,6 +32,7 @@ export class NPCManager {
   private readonly _npcToCamera = new THREE.Vector3();
   private readonly _npcForward = new THREE.Vector3();
   private readonly _tempQuaternion = new THREE.Quaternion();
+  private readonly _tempObject = new THREE.Object3D();
 
   constructor() {
     // Load configuration from environment variables with defaults
@@ -44,7 +45,7 @@ export class NPCManager {
     this.cooldownDuration = parseFloat(process.env.NEXT_PUBLIC_NPC_AWARENESS_COOLDOWN || '30');
   }
 
-  async init(sceneModel: THREE.Group, threeScene: THREE.Scene): Promise<void> {
+  async init(sceneModel: THREE.Group, threeScene: THREE.Scene, isMobile = false): Promise<void> {
     // Find the Shrimp_god_statue to make NPCs look at it
     sceneModel.traverse((node) => {
       if (node.name === 'Shrimp_god_statue') {
@@ -105,10 +106,10 @@ export class NPCManager {
         npcClone.quaternion.copy(spawnPoint.quaternion);
       }
 
-      // Enable shadows on all meshes
+      // Enable shadows — no castShadow on mobile for NPCs
       npcClone.traverse((child) => {
         if (child instanceof THREE.Mesh) {
-          child.castShadow = true;
+          child.castShadow = !isMobile;
           child.receiveShadow = true;
         }
       });
@@ -216,10 +217,9 @@ export class NPCManager {
         }
 
         // Calculate target quaternion to face player
-        const tempObj = new THREE.Object3D();
-        tempObj.position.copy(state.npc.position);
-        tempObj.lookAt(cameraPosition.x, state.npc.position.y, cameraPosition.z);
-        state.targetQuaternion.copy(tempObj.quaternion);
+        this._tempObject.position.copy(state.npc.position);
+        this._tempObject.lookAt(cameraPosition.x, state.npc.position.y, cameraPosition.z);
+        state.targetQuaternion.copy(this._tempObject.quaternion);
         state.currentRotationProgress = 0;
       }
 
@@ -228,10 +228,9 @@ export class NPCManager {
         state.awareTimer += delta;
 
         // Continuously track player position
-        const tempObj = new THREE.Object3D();
-        tempObj.position.copy(state.npc.position);
-        tempObj.lookAt(cameraPosition.x, state.npc.position.y, cameraPosition.z);
-        state.targetQuaternion.copy(tempObj.quaternion);
+        this._tempObject.position.copy(state.npc.position);
+        this._tempObject.lookAt(cameraPosition.x, state.npc.position.y, cameraPosition.z);
+        state.targetQuaternion.copy(this._tempObject.quaternion);
 
         // Smoothly rotate toward player
         state.npc.quaternion.slerp(state.targetQuaternion, delta * 5.0);

@@ -41,6 +41,9 @@ export class SceneEngine {
   // Reusable vectors for movement calculation
   private _direction = new THREE.Vector3();
   private _right = new THREE.Vector3();
+  // Reusable colors for day-night cycle (avoid per-frame allocation)
+  private _fogColor = new THREE.Color();
+  private _dayColor = new THREE.Color(0x87ceeb);
 
   // Celestial bodies (visible sun)
   private sunModel: THREE.Group | null = null; // loaded from Sun.glb
@@ -323,12 +326,13 @@ export class SceneEngine {
     this.container = container;
     this.inputState = createInputState();
 
-    // Renderer
-    this.renderer = new THREE.WebGLRenderer({ antialias: true });
+    // Renderer — reduce quality on mobile
+    const isMobile = options.isMobile;
+    this.renderer = new THREE.WebGLRenderer({ antialias: !isMobile });
     this.renderer.setSize(container.clientWidth, container.clientHeight);
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.setPixelRatio(isMobile ? 1 : Math.min(window.devicePixelRatio, 2));
     this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.shadowMap.type = isMobile ? THREE.BasicShadowMap : THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.2;
     container.appendChild(this.renderer.domElement);
@@ -349,8 +353,8 @@ export class SceneEngine {
     this.sunLight = new THREE.DirectionalLight(0xfff4e6, 1.5);
     this.sunLight.position.set(8, 12, 6);
     this.sunLight.castShadow = true;
-    this.sunLight.shadow.mapSize.width = 2048;
-    this.sunLight.shadow.mapSize.height = 2048;
+    this.sunLight.shadow.mapSize.width = isMobile ? 512 : 2048;
+    this.sunLight.shadow.mapSize.height = isMobile ? 512 : 2048;
     this.sunLight.shadow.bias = -0.0005;
     this.sunLight.shadow.normalBias = 0.05;
     this.sunLight.shadow.camera.near = 0.5;
@@ -375,7 +379,7 @@ export class SceneEngine {
     this.initSky();
 
     // Subsystems
-    this.grassSystem = new GrassSystem();
+    this.grassSystem = new GrassSystem(isMobile);
     this.npcManager = new NPCManager();
 
     // Controls
@@ -422,11 +426,19 @@ export class SceneEngine {
 
       const model = gltf.scene as THREE.Group;
 
-      // Enable shadows on all meshes
+      // Enable shadows — on mobile only key objects cast shadows
+      const shadowCasters = ['Shrimp_god_statue', 'House', 'Bridge'];
       model.traverse((child: THREE.Object3D) => {
         if ((child as THREE.Mesh).isMesh) {
-          (child as THREE.Mesh).castShadow = true;
           (child as THREE.Mesh).receiveShadow = true;
+          if (this.options.isMobile) {
+            const shouldCast = shadowCasters.some(
+              (name) => child.name.includes(name) || (child.parent && child.parent.name.includes(name))
+            );
+            (child as THREE.Mesh).castShadow = shouldCast;
+          } else {
+            (child as THREE.Mesh).castShadow = true;
+          }
         }
       });
 
@@ -563,24 +575,7 @@ export class SceneEngine {
         }
       });
 
-      if (mainNode) {
-        (mainNode as THREE.Object3D).updateWorldMatrix(true, false);
-        const pos = new THREE.Vector3().setFromMatrixPosition(
-          (mainNode as THREE.Object3D).matrixWorld
-        );
-        this.camera.position.copy(pos);
-        // Place high initially, gravity will bring it down to ground
-        this.camera.position.y += 10;
-        console.log('Camera placed at Main node:', pos);
-      } else {
-        // Fallback: place camera at scene center
-        const box = new THREE.Box3().setFromObject(model);
-        const center = box.getCenter(new THREE.Vector3());
-        this.camera.position.set(center.x, center.y + 10, center.z + 5);
-        console.warn('Main node not found, using fallback camera position');
-      }
-
-      // Collect environment meshes for ground collision
+      // Collect environment meshes for ground collision FIRST (needed for spawn raycast)
       const envNames = [
         'Bridge',
         'House',
@@ -591,13 +586,11 @@ export class SceneEngine {
       ];
       model.traverse((child: THREE.Object3D) => {
         if ((child as THREE.Mesh).isMesh) {
-          // Include meshes that are part of the environment (not spawn points/empties)
           const isEnv = envNames.some(
             (name) =>
               child.name.includes(name) ||
               (child.parent && child.parent.name.includes(name))
           );
-          // Also include any mesh named Mesh_0* which is typically the island/terrain
           const isTerrain =
             child.name.startsWith('Mesh_0') || child.name.startsWith('Mesh_');
           if (isEnv || isTerrain) {
@@ -609,11 +602,45 @@ export class SceneEngine {
         `Collected ${this.groundMeshes.length} ground meshes for collision`
       );
 
-      // Create volumetric cloud around Sky_city (Laputa castle)
-      this.createVolumetricCloud(model);
+      // Spawn camera directly on the ground (no falling)
+      let spawnX: number, spawnZ: number;
+      if (mainNode) {
+        (mainNode as THREE.Object3D).updateWorldMatrix(true, false);
+        const pos = new THREE.Vector3().setFromMatrixPosition(
+          (mainNode as THREE.Object3D).matrixWorld
+        );
+        spawnX = pos.x;
+        spawnZ = pos.z;
+      } else {
+        spawnX = this.isleCenter.x;
+        spawnZ = this.isleCenter.z + 5;
+        console.warn('Main node not found, using Isle center as spawn');
+      }
 
-      // Create volumetric fog around island base
-      this.createIslandFog(model);
+      // Raycast straight down from high above to find the ground surface
+      const spawnRay = new THREE.Raycaster();
+      const spawnOrigin = new THREE.Vector3(spawnX, 500, spawnZ);
+      spawnRay.set(spawnOrigin, new THREE.Vector3(0, -1, 0));
+      spawnRay.far = 1000;
+      const spawnHits = spawnRay.intersectObjects(this.groundMeshes, false);
+
+      if (spawnHits.length > 0) {
+        const groundY = spawnHits[0].point.y;
+        this.camera.position.set(spawnX, groundY + this.playerHeight, spawnZ);
+        console.log('Camera spawned on ground at:', this.camera.position);
+      } else {
+        // Fallback if raycast misses: use isle center Y + offset
+        this.camera.position.set(spawnX, this.isleCenter.y + this.playerHeight + 2, spawnZ);
+        console.warn('Spawn raycast missed, using fallback Y');
+      }
+      this.verticalVelocity = 0;
+      this.isGrounded = true;
+
+      // Volumetric effects — skip entirely on mobile (biggest GPU cost)
+      if (!this.options.isMobile) {
+        this.createVolumetricCloud(model);
+        this.createIslandFog(model);
+      }
 
       // Create spherical point light around the Shrimp_god_statue (Lobster statue)
       this.setupStatueLight(model);
@@ -627,7 +654,7 @@ export class SceneEngine {
       }
 
       // Initialize NPC shrimps
-      await this.npcManager.init(model, this.scene);
+      await this.npcManager.init(model, this.scene, this.options.isMobile);
       console.log('NPCs initialized');
 
       // Signal loading complete
@@ -805,7 +832,7 @@ export class SceneEngine {
    * Stars fade in at night and slowly rotate.
    */
   private initStars(): void {
-    const starCount = 2000;
+    const starCount = this.options.isMobile ? 500 : 2000;
     const positions = new Float32Array(starCount * 3);
 
     for (let i = 0; i < starCount; i++) {
@@ -894,9 +921,6 @@ export class SceneEngine {
     // sunHeight -0.3 → 0.3 : HDR dims smoothly
     // sunHeight -1.0 → -0.3: near-dark (intensity ~0.02)
     //
-    const nightColor = new THREE.Color(0x060a18); // very dark blue (fog at night)
-    const dayColor = new THREE.Color(0x87ceeb);   // azure sky (fog during day)
-
     const hdrT = THREE.MathUtils.smoothstep(sunHeight, -0.3, 0.3);
     const hdrIntensity = THREE.MathUtils.lerp(0.02, 1.0, hdrT);
 
@@ -907,12 +931,12 @@ export class SceneEngine {
       this.scene.environmentIntensity = hdrIntensity;
     }
 
-    // Fog color follows the same brightness curve
-    const currentSkyColor = nightColor.clone().lerp(dayColor, hdrT);
+    // Fog color follows the same brightness curve (reuse _fogColor to avoid clone())
+    this._fogColor.setHex(0x060a18).lerp(this._dayColor, hdrT);
 
     // --- Update fog color to match sky (feature 4) ---
     if (this.sceneFog) {
-      this.sceneFog.color.copy(currentSkyColor);
+      this.sceneFog.color.copy(this._fogColor);
     }
 
     // --- Directional (sun) light: follows sun world position ---

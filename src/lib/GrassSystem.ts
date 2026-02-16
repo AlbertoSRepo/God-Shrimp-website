@@ -145,6 +145,17 @@ export class GrassSystem {
     private grassMesh: THREE.Mesh | null = null;
     private interactors: THREE.Object3D[] = [];
     private _interactorWorldPos = new THREE.Vector3();
+    private isMobile = false;
+
+    constructor(isMobile = false) {
+        this.isMobile = isMobile;
+        if (isMobile) {
+            // Drastically reduce grass density on mobile
+            GRASS_CONFIG.bladesPerVertex = 8;
+            GRASS_CONFIG.bladesPerSquareUnit = 6;
+            GRASS_CONFIG.maxBladesPerFace = 30;
+        }
+    }
 
     /**
      * Build grass blade geometry (single blade as a tapered quad strip)
