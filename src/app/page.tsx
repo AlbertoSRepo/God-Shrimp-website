@@ -14,6 +14,7 @@ export default function Home() {
   const engineRef = useRef<any>(null);
   const [progress, setProgress] = useState(0);
   const [loaded, setLoaded] = useState(false);
+  const [ready, setReady] = useState(false);
   const [isMobile, setIsMobile] = useState<boolean | null>(null);
   const [showFullscreenPrompt, setShowFullscreenPrompt] = useState(false);
 
@@ -27,12 +28,12 @@ export default function Home() {
     setIsMobile(check);
   }, []);
 
-  // Show fullscreen prompt when loaded on mobile
+  // Show fullscreen prompt when ready on mobile
   useEffect(() => {
-    if (loaded && isMobile) {
+    if (ready && isMobile) {
       setShowFullscreenPrompt(true);
     }
-  }, [loaded, isMobile]);
+  }, [ready, isMobile]);
 
   // Engine lifecycle - wait until mobile detection is done (isMobile !== null)
   useEffect(() => {
@@ -70,8 +71,14 @@ export default function Home() {
   return (
     <>
       <div ref={containerRef} style={{ width: '100vw', height: '100vh' }} />
-      <LoadingScreen progress={progress} visible={!loaded} />
-      {isMobile === true && loaded && (
+      {!ready && (
+        <LoadingScreen
+          progress={progress}
+          loaded={loaded}
+          onReady={() => setReady(true)}
+        />
+      )}
+      {isMobile === true && ready && (
         <MobileControls onMove={handleMove} onLook={handleLook} />
       )}
       {showFullscreenPrompt && (
