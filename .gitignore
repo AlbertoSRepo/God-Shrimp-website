@@ -1,0 +1,38 @@
+# Dependencies
+node_modules/
+
+# Next.js
+.next/
+out/
+
+# Environment
+.env.local
+
+# Build
+tsconfig.tsbuildinfo
+
+# Blender source files
+blender-scene.blend
+
+# Asset sources (already in public/models/)
+assets/
+reference/
+
+# Root duplicates
+/scene.glb
+/citrus_orchard_road_puresky_2k.exr
+/golden_gate_hills_1k.exr
+/image copy.png
+
+# Large models hosted on R2
+public/models/scene.glb
+
+# Claude
+.claude/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Old files
+index.html
