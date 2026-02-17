@@ -92,6 +92,7 @@ export class SceneEngine {
   private positionalAudio: THREE.PositionalAudio | null = null;
   private audioMesh: THREE.Object3D | null = null;
   private audioResumed = false;
+  private _initAudioOnGesture: (() => void) | null = null;
 
   // Ground physics
   private _raycaster = new THREE.Raycaster();
@@ -1378,59 +1379,53 @@ export class SceneEngine {
 
     console.log('Audio source centroid:', centroid, 'maxDistance:', maxDist);
 
-    // Create AudioListener and attach to camera
-    this.audioListener = new THREE.AudioListener();
-    this.camera.add(this.audioListener);
+    // Defer AudioListener creation until first user gesture to avoid
+    // "AudioContext was not allowed to start" warnings
+    const initAudioOnGesture = () => {
+      if (this.audioResumed || this.disposed) return;
+      this.audioResumed = true;
 
-    // Create a positional audio source
-    this.positionalAudio = new THREE.PositionalAudio(this.audioListener);
+      // Remove all listeners
+      document.removeEventListener('click', initAudioOnGesture);
+      document.removeEventListener('touchstart', initAudioOnGesture);
+      document.removeEventListener('keydown', initAudioOnGesture);
 
-    // Create an invisible object to hold the audio at the centroid
-    this.audioMesh = new THREE.Object3D();
-    this.audioMesh.position.copy(centroid);
-    this.audioMesh.add(this.positionalAudio);
-    this.scene.add(this.audioMesh);
+      // Create AudioListener and attach to camera
+      this.audioListener = new THREE.AudioListener();
+      this.camera.add(this.audioListener);
 
-    // Load and configure the audio
-    const audioLoader = new THREE.AudioLoader();
-    audioLoader.load('/music.mp3', (buffer) => {
-      if (this.disposed || !this.positionalAudio) return;
+      // Create a positional audio source
+      this.positionalAudio = new THREE.PositionalAudio(this.audioListener);
 
-      this.positionalAudio.setBuffer(buffer);
-      this.positionalAudio.setLoop(true);
-      this.positionalAudio.setVolume(1.0);
-      this.positionalAudio.setRefDistance(1); // full volume within 1 unit of source
-      this.positionalAudio.setMaxDistance(maxDist);
-      this.positionalAudio.setRolloffFactor(1.5);
-      this.positionalAudio.setDistanceModel('linear');
+      // Create an invisible object to hold the audio at the centroid
+      this.audioMesh = new THREE.Object3D();
+      this.audioMesh.position.copy(centroid);
+      this.audioMesh.add(this.positionalAudio);
+      this.scene.add(this.audioMesh);
 
-      // AudioContext requires user interaction to start — resume on first click/touch
-      const resumeAudio = () => {
-        if (this.audioResumed) return;
-        const ctx = this.audioListener?.context;
-        if (ctx && ctx.state === 'suspended') {
-          ctx.resume().then(() => {
-            if (this.positionalAudio && !this.positionalAudio.isPlaying) {
-              this.positionalAudio.play();
-            }
-            console.log('Spatial audio started (user interaction)');
-          });
-        } else if (this.positionalAudio && !this.positionalAudio.isPlaying) {
-          this.positionalAudio.play();
-          console.log('Spatial audio started');
-        }
-        this.audioResumed = true;
-      };
+      // Load and configure the audio
+      const audioLoader = new THREE.AudioLoader();
+      audioLoader.load('/music.mp3', (buffer) => {
+        if (this.disposed || !this.positionalAudio) return;
 
-      document.addEventListener('click', resumeAudio, { once: true });
-      document.addEventListener('touchstart', resumeAudio, { once: true });
-      document.addEventListener('keydown', resumeAudio, { once: true });
+        this.positionalAudio.setBuffer(buffer);
+        this.positionalAudio.setLoop(true);
+        this.positionalAudio.setVolume(1.0);
+        this.positionalAudio.setRefDistance(1);
+        this.positionalAudio.setMaxDistance(maxDist);
+        this.positionalAudio.setRolloffFactor(1.5);
+        this.positionalAudio.setDistanceModel('linear');
+        this.positionalAudio.play();
 
-      // Try to play immediately (may work if autoplay policy allows)
-      resumeAudio();
+        console.log('Spatial audio started after user gesture');
+      });
+    };
 
-      console.log('Spatial audio loaded and configured');
-    });
+    // Store reference for cleanup in dispose()
+    this._initAudioOnGesture = initAudioOnGesture;
+    document.addEventListener('click', initAudioOnGesture);
+    document.addEventListener('touchstart', initAudioOnGesture);
+    document.addEventListener('keydown', initAudioOnGesture);
   }
 
   private animate = (): void => {
@@ -1659,6 +1654,14 @@ export class SceneEngine {
     if (this.statueLight) {
       this.scene.remove(this.statueLight);
       this.statueLight = null;
+    }
+
+    // Remove audio gesture listeners if still pending
+    if (this._initAudioOnGesture) {
+      document.removeEventListener('click', this._initAudioOnGesture);
+      document.removeEventListener('touchstart', this._initAudioOnGesture);
+      document.removeEventListener('keydown', this._initAudioOnGesture);
+      this._initAudioOnGesture = null;
     }
 
     // Dispose spatial audio
