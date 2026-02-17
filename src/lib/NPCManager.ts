@@ -18,6 +18,7 @@ interface NPCState {
 export class NPCManager {
   private npcStates: NPCState[] = [];
   private statuePosition: THREE.Vector3 | null = null;
+  private spawnPositions: THREE.Vector3[] = [];
 
   // Configuration from environment variables
   private readonly idleAnimationName: string;
@@ -69,6 +70,7 @@ export class NPCManager {
           quaternion: worldQuaternion,
           name: node.name
         });
+        this.spawnPositions.push(worldPosition.clone());
       }
     });
 
@@ -266,6 +268,10 @@ export class NPCManager {
 
   getNPCs(): THREE.Object3D[] {
     return this.npcStates.map(state => state.npc);
+  }
+
+  getSpawnPositions(): THREE.Vector3[] {
+    return this.spawnPositions;
   }
 
   dispose(): void {

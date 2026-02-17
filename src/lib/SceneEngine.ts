@@ -87,6 +87,12 @@ export class SceneEngine {
   // Sun point light: bright radial light emitted from the Sun model itself
   private sunPointLight: THREE.PointLight | null = null;
 
+  // Spatial audio
+  private audioListener: THREE.AudioListener | null = null;
+  private positionalAudio: THREE.PositionalAudio | null = null;
+  private audioMesh: THREE.Object3D | null = null;
+  private audioResumed = false;
+
   // Ground physics
   private _raycaster = new THREE.Raycaster();
   private _rayOrigin = new THREE.Vector3();
@@ -656,6 +662,9 @@ export class SceneEngine {
       // Initialize NPC shrimps
       await this.npcManager.init(model, this.scene, this.options.isMobile);
       console.log('NPCs initialized');
+
+      // Setup spatial audio: music source at the centroid of the 3 closest NPCs
+      this.setupSpatialAudio(this.camera.position.clone());
 
       // Signal loading complete
       this.options.onProgress(100);
@@ -1338,6 +1347,92 @@ export class SceneEngine {
     console.log('Created volumetric fog around Island base');
   }
 
+  /**
+   * Setup spatial audio: music.mp3 is placed at the centroid of the 3 closest
+   * NPC shrimp spawn points. The listening radius grows from that point (max volume)
+   * to the camera spawn position (min volume / silence).
+   */
+  private setupSpatialAudio(cameraSpawnPos: THREE.Vector3): void {
+    const spawnPositions = this.npcManager.getSpawnPositions();
+    if (spawnPositions.length === 0) {
+      console.warn('No NPC spawn positions available for spatial audio');
+      return;
+    }
+
+    // Sort spawn positions by distance to camera spawn and pick the 3 closest
+    const sorted = spawnPositions
+      .map((pos) => ({ pos, dist: pos.distanceTo(cameraSpawnPos) }))
+      .sort((a, b) => a.dist - b.dist);
+
+    const closest3 = sorted.slice(0, Math.min(3, sorted.length));
+
+    // Compute centroid of the closest 3 NPCs
+    const centroid = new THREE.Vector3();
+    for (const entry of closest3) {
+      centroid.add(entry.pos);
+    }
+    centroid.divideScalar(closest3.length);
+
+    // Max distance = distance from centroid to camera spawn position
+    const maxDist = centroid.distanceTo(cameraSpawnPos);
+
+    console.log('Audio source centroid:', centroid, 'maxDistance:', maxDist);
+
+    // Create AudioListener and attach to camera
+    this.audioListener = new THREE.AudioListener();
+    this.camera.add(this.audioListener);
+
+    // Create a positional audio source
+    this.positionalAudio = new THREE.PositionalAudio(this.audioListener);
+
+    // Create an invisible object to hold the audio at the centroid
+    this.audioMesh = new THREE.Object3D();
+    this.audioMesh.position.copy(centroid);
+    this.audioMesh.add(this.positionalAudio);
+    this.scene.add(this.audioMesh);
+
+    // Load and configure the audio
+    const audioLoader = new THREE.AudioLoader();
+    audioLoader.load('/music.mp3', (buffer) => {
+      if (this.disposed || !this.positionalAudio) return;
+
+      this.positionalAudio.setBuffer(buffer);
+      this.positionalAudio.setLoop(true);
+      this.positionalAudio.setVolume(1.0);
+      this.positionalAudio.setRefDistance(1); // full volume within 1 unit of source
+      this.positionalAudio.setMaxDistance(maxDist);
+      this.positionalAudio.setRolloffFactor(1.5);
+      this.positionalAudio.setDistanceModel('linear');
+
+      // AudioContext requires user interaction to start — resume on first click/touch
+      const resumeAudio = () => {
+        if (this.audioResumed) return;
+        const ctx = this.audioListener?.context;
+        if (ctx && ctx.state === 'suspended') {
+          ctx.resume().then(() => {
+            if (this.positionalAudio && !this.positionalAudio.isPlaying) {
+              this.positionalAudio.play();
+            }
+            console.log('Spatial audio started (user interaction)');
+          });
+        } else if (this.positionalAudio && !this.positionalAudio.isPlaying) {
+          this.positionalAudio.play();
+          console.log('Spatial audio started');
+        }
+        this.audioResumed = true;
+      };
+
+      document.addEventListener('click', resumeAudio, { once: true });
+      document.addEventListener('touchstart', resumeAudio, { once: true });
+      document.addEventListener('keydown', resumeAudio, { once: true });
+
+      // Try to play immediately (may work if autoplay policy allows)
+      resumeAudio();
+
+      console.log('Spatial audio loaded and configured');
+    });
+  }
+
   private animate = (): void => {
     if (this.disposed) return;
 
@@ -1564,6 +1659,23 @@ export class SceneEngine {
     if (this.statueLight) {
       this.scene.remove(this.statueLight);
       this.statueLight = null;
+    }
+
+    // Dispose spatial audio
+    if (this.positionalAudio) {
+      if (this.positionalAudio.isPlaying) {
+        this.positionalAudio.stop();
+      }
+      this.positionalAudio.disconnect();
+      this.positionalAudio = null;
+    }
+    if (this.audioMesh) {
+      this.scene.remove(this.audioMesh);
+      this.audioMesh = null;
+    }
+    if (this.audioListener) {
+      this.camera.remove(this.audioListener);
+      this.audioListener = null;
     }
 
     // Clear fog reference
